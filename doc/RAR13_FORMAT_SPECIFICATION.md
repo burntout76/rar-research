@@ -440,8 +440,8 @@ Note: `ShortLen1[1]` and `ShortLen2[3]` are dynamically modified to
 
 **Buf60 semantics.**
 
-- Initial value at decoder/encoder start: `0` (set by `UnpInitData15`,
-  see §6.10). With `Buf60 == 0` the static-table values `ShortLen1[1] = 3`
+- Initial value at decoder/encoder start: `0` (reset for every non-solid
+  file, see §6.10). With `Buf60 == 0` the static-table values `ShortLen1[1] = 3`
   and `ShortLen2[3] = 3` are in effect. With `Buf60 == 1` both become `4`.
 - Toggle trigger: only inside ShortLZ on the *rep-match* path (§6.13)
   with decoded short length `SaveLength == 10` and the subsequent
@@ -452,9 +452,8 @@ Note: `ShortLen1[1]` and `ShortLen2[3]` are dynamically modified to
   there is no implicit reset.
 
 In implementation, declaring `ShortLen1` / `ShortLen2` as constants and
-using accessor macros that substitute `Buf60 + 3` for indices 1 and 3
-respectively is preferable to mutating the tables — keeps the codec
-state thread-friendly and matches the upstream macro form.
+substituting `Buf60 + 3` for indices 1 and 3 on lookup is preferable to
+mutating the tables: it keeps the codec state thread-friendly.
 
 ### 6.9 State Variables
 
@@ -474,22 +473,21 @@ state thread-friendly and matches the upstream macro form.
 | LCount   | 0            | Last-match repeat counter. |
 | FlagBuf  | 0            | Current flag byte (shifted left as consumed). |
 | FlagsCnt | 0            | Remaining flag bits. |
-| OldDist[4] | all 1-bits (`(size_t)-1`) on non-solid; carries on solid | Repeat distance buffer (4 entries). The all-ones sentinel exceeds any valid 64-KiB-window distance, so a rep-match against an unwritten slot reaches past the window and zero-fills, as `CopyString15` does for any such distance (see "Window contents on non-solid" below). |
+| OldDist[4] | all 1-bits on non-solid; carries on solid | Repeat distance buffer (4 entries). The all-ones sentinel exceeds any valid 64-KiB-window distance, so a rep-match against an unwritten slot reaches past the window and zero-fills, as the match copy does for any such distance (see "Window contents on non-solid" below). |
 | OldDistPtr | 0            | Write cursor into `OldDist[]`, always masked `& 3`. New matches go to `OldDist[OldDistPtr]` then `OldDistPtr = (OldDistPtr+1) & 3`; ShortLZ rep-matches with decoded length `9..12` read from `OldDist[(OldDistPtr - (Length-9)) & 3]` (0 = most recent, 3 = oldest). |
-| LastDist | `(uint)-1`     | Most recent match distance (used by `LCount==2` immediate-repeat path in ShortLZ). |
+| LastDist | all 1-bits     | Most recent match distance (used by `LCount==2` immediate-repeat path in ShortLZ). |
 | LastLength | 0            | Most recent match length (used by the same immediate-repeat path; 0 means "no prior match" so the path is effectively disabled until the first real match). |
 
 ### 6.10 Main Decode Loop
 
-`OldUnpInitData(solid)` is the codec-state reset, split between the
-shared unpacker reset and the Unpack15-specific one. On a non-solid file
-it resets:
+Each file entering the decoder starts with a state reset. On a non-solid
+file it resets:
 
 | State | Reset value |
 |-------|-------------|
-| `OldDist[0..3]` | `(size_t)-1` |
+| `OldDist[0..3]` | all 1-bits |
 | `OldDistPtr` | `0` |
-| `LastDist` | `(uint)-1` |
+| `LastDist` | all 1-bits |
 | `LastLength` | `0` |
 | `BlockTables` | zero-filled |
 | `UnpPtr`, `WrPtr`, `PrevPtr` | `0` |
@@ -514,7 +512,7 @@ implementation may leave the window in whatever state it had previously
 without correctness consequences.
 
 ```
-OldUnpInitData(solid)
+reset_state(solid)      # the reset table above
 if not solid:
     InitHuff()
     UnpPtr = 0
